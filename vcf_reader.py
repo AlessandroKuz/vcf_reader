@@ -1,7 +1,8 @@
 """
 VCF.py
 Kamil Slowikowski
-October 30, 2013
+Alessandro Kuz
+May 29, 2024
 
 Read VCF files. Works with gzip compressed files and pandas.
 
@@ -70,11 +71,12 @@ For more information, please refer to <http://unlicense.org/>
 
 
 from collections import OrderedDict
-import gzip
 import pandas as pd
+import pathlib
+import gzip
 
 
-VCF_HEADER = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO']
+VCF_HEADER = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT', 'SAMPLE']  # To add a simple way to check for last 2 columns (FORMAT AND SAMPLE or specific sample name)
 
 
 def dataframe(filename, large=True):
@@ -87,14 +89,20 @@ def dataframe(filename, large=True):
     :param large:       Use this with large VCF files to skip the ## lines and
                         leave the INFO fields unseparated as a single column.
     """
+    # Convert to a string if a pathlib.Path
+    if isinstance(filename, pathlib.Path):
+        filename = filename.as_posix()
+
     if large:
         # Set the proper argument if the file is compressed.
         comp = 'gzip' if filename.endswith('.gz') else None
         # Count how many comment lines should be skipped.
         comments = _count_comments(filename)
+        # Get columns from VCF file header
+        vcf_columns = _get_columns(filename, comments)
         # Return a simple DataFrame without splitting the INFO column.
-        return pd.read_table(filename, compression=comp, skiprows=comments,
-                             names=VCF_HEADER, usecols=range(8))
+        return pd.read_table(filename, compression=comp, skiprows=comments + 1,  # +1 to account for the column names header
+                             names=vcf_columns, usecols=range(len(vcf_columns)))
 
     # Each column is a list stored as a value in this dict. The keys for this
     # dict are the VCF column names and the keys in the INFO column.
@@ -121,7 +129,8 @@ def lines(filename):
 
     with fn_open(filename) as fh:
         for line in fh:
-            if line.startswith('#'):
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith('##'):
                 continue
             else:
                 yield parse(line)
@@ -151,6 +160,9 @@ def parse(line):
             value = info
         # Set the value to None if there is no value.
         result[key] = _get_value(value)
+    
+    if 'AF' in result.keys() and isinstance(result['AF'], list):
+        result['AF'] = '.'.join(result['AF'])
 
     return result
 
@@ -167,7 +179,7 @@ def _get_value(value):
 
 
 def _count_comments(filename):
-    """Count comment lines (those that start with "#") in an optionally
+    """Count comment lines (those that start with "##") in an optionally
     gzipped file.
 
     :param filename:  An optionally gzipped file.
@@ -176,8 +188,27 @@ def _count_comments(filename):
     fn_open = gzip.open if filename.endswith('.gz') else open
     with fn_open(filename) as fh:
         for line in fh:
-            if line.startswith('#'):
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith('##'):
                 comments += 1
             else:
                 break
     return comments
+
+
+def _get_columns(filename, comments):
+    """Read the optionally gzipped file and extract the column names after
+    skipping the metadata.
+    
+    :param filename:  An optionally gzipped file.
+    :param comments:  The amount of metadata lines to skip.
+
+    :return: list containing the names of the columns in order of appearance.
+    """
+    fn_open = gzip.open if filename.endswith('.gz') else open
+    with fn_open(filename) as fh:
+        columns_line = fh.readlines()[comments]
+        columns_line = columns_line.decode() if isinstance(columns_line, bytes) else columns_line
+        columns_line = columns_line.strip('#').strip()
+        column_names = columns_line.split('\t')
+    return column_names
